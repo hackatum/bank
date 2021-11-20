@@ -4,6 +4,8 @@ pragma solidity 0.7.0;
 import "./interfaces/IBank.sol";
 import "./interfaces/IPriceOracle.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./libraries/Math.sol";
+import "hardhat/console.sol";
 
 contract Bank is IBank {
     address private oracle;
@@ -11,8 +13,9 @@ contract Bank is IBank {
     address private magic_token = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     struct Balance {
-        mapping(address => uint256) tokens;
-        uint256 eth_amount;
+        address[] token_address_list;
+        mapping(address => Account) tokens_map;
+        Account eth_act;
     }
 
     mapping(address => Balance) private accounts;
@@ -20,6 +23,50 @@ contract Bank is IBank {
     constructor(address _priceOracle, address _hakToken) {
         oracle = _priceOracle;
         hakToken = _hakToken;
+    }
+
+    modifier updateInterest(address token) {
+        Balance storage user_bal = accounts[msg.sender];
+
+        Account memory updated_eth_acc = calculateInterest(
+            user_bal.eth_act,
+            block.number
+        );
+        accounts[msg.sender].eth_act = updated_eth_acc;
+
+        uint256 arrayLength = user_bal.token_address_list.length;
+        for (uint256 i = 0; i < arrayLength; i++) {
+            Account memory updated_token_acc = calculateInterest(
+                user_bal.tokens_map[user_bal.token_address_list[i]],
+                block.number
+            );
+            user_bal.tokens_map[
+                user_bal.token_address_list[i]
+            ] = updated_token_acc;
+            //   totalValue += mappedUsers[addressIndices[i]];
+        }
+        _;
+    }
+
+    // TODO: maybe we can use calldata instead of memory
+    function calculateInterest(Account memory account, uint256 current_block)
+        private
+        view
+        returns (Account memory)
+    {
+        uint256 passed_block = current_block - account.lastInterestBlock;
+        if (passed_block < 0) revert("Can not go back to past");
+        uint256 tem = DSMath.mul(3, passed_block);
+        // uint256 amt_interest = ((3 * passed_block) / 10000); // TODO: Recheck // .03
+
+        uint256 added_interest = DSMath.mul(account.deposit, tem) / 10000;
+        // revert(added_interest);
+        return
+            Account(
+                account.deposit,
+                account.interest + added_interest,
+                current_block
+            );
     }
 
     function isValidContract(address token)
@@ -46,13 +93,19 @@ contract Bank is IBank {
         payable
         override
         OnlyIfValidToken(token)
+        updateInterest(token)
         returns (bool)
     {
         // TODO: check for negative or 0
         if (token == magic_token) {
-            accounts[msg.sender].eth_amount =
-                accounts[msg.sender].eth_amount +
+            accounts[msg.sender].eth_act.deposit =
+                accounts[msg.sender].eth_act.deposit +
                 amount;
+
+            if (accounts[msg.sender].eth_act.lastInterestBlock == 0) {
+                accounts[msg.sender].eth_act.lastInterestBlock = block.number;
+            }
+
             return true;
         } else {
             IERC20 iecr20 = IERC20(token);
@@ -61,9 +114,15 @@ contract Bank is IBank {
             }
             // TODO: Only set this value if money substraction was successful
             // TODO: Add thread safety. Should we????
-            accounts[msg.sender].tokens[token] =
-                accounts[msg.sender].tokens[token] +
+            accounts[msg.sender].token_address_list.push(token);
+            accounts[msg.sender].tokens_map[token].deposit =
+                accounts[msg.sender].tokens_map[token].deposit +
                 amount;
+
+            if (accounts[msg.sender].tokens_map[token].lastInterestBlock == 0) {
+                accounts[msg.sender].tokens_map[token].lastInterestBlock = block
+                    .number;
+            }
             return
                 IERC20(token).transferFrom(msg.sender, address(this), amount);
         }
@@ -75,9 +134,17 @@ contract Bank is IBank {
     function getBalance(address token) public view override returns (uint256) {
         // todo check if key is present in map
         if (token == magic_token) {
-            return accounts[msg.sender].eth_amount;
+            Account memory updated = calculateInterest(
+                accounts[msg.sender].eth_act,
+                block.number
+            );
+            return updated.deposit + updated.interest;
         } else {
-            return accounts[msg.sender].tokens[token];
+            Account memory updated = calculateInterest(
+                accounts[msg.sender].tokens_map[token],
+                block.number
+            );
+            return updated.deposit + updated.interest;
         }
     }
 
@@ -93,10 +160,12 @@ contract Bank is IBank {
         }
     }
 
+    //TODO: Check interest
     function withdraw(address token, uint256 amount)
         external
         override
         OnlyIfValidToken(token)
+        updateInterest(token)
         returns (uint256)
     {
         // TODO: Check negative
@@ -106,49 +175,82 @@ contract Bank is IBank {
         if (token == magic_token) {
             if (amount == 0) {
                 // if zero, then we withdraw all the money
-                to_withdraw = accounts[msg.sender].eth_amount;
+                to_withdraw =
+                    accounts[msg.sender].eth_act.deposit +
+                    accounts[msg.sender].eth_act.interest;
             } else {
                 to_withdraw = amount;
             }
             // TODO: make thread safe
-            uint256 cur_balance = accounts[msg.sender].eth_amount;
+            uint256 cur_balance = accounts[msg.sender].eth_act.deposit +
+                accounts[msg.sender].eth_act.interest;
             check_balance(cur_balance, to_withdraw);
 
-            accounts[msg.sender].eth_amount =
-                accounts[msg.sender].eth_amount -
-                to_withdraw;
-
-            return cur_balance;
+            if (to_withdraw <= accounts[msg.sender].eth_act.interest) {
+                accounts[msg.sender].eth_act.interest =
+                    accounts[msg.sender].eth_act.interest -
+                    to_withdraw;
+            } else {
+                accounts[msg.sender].eth_act.deposit =
+                    accounts[msg.sender].eth_act.deposit -
+                    (to_withdraw - accounts[msg.sender].eth_act.interest);
+                accounts[msg.sender].eth_act.interest = 0;
+            }
+            emit Withdraw(msg.sender, token, to_withdraw);
+            return to_withdraw;
         } else {
             if (amount == 0) {
                 // if zero, then we withdraw all the money
-                to_withdraw = accounts[msg.sender].tokens[token];
+                to_withdraw =
+                    accounts[msg.sender].tokens_map[token].deposit +
+                    accounts[msg.sender].tokens_map[token].interest;
             } else {
                 to_withdraw = amount;
             }
 
             // TODO: make thread safe
-            uint256 cur_balance = accounts[msg.sender].tokens[token];
+            uint256 cur_balance = accounts[msg.sender]
+                .tokens_map[token]
+                .deposit + accounts[msg.sender].tokens_map[token].interest;
             check_balance(cur_balance, to_withdraw);
 
-            accounts[msg.sender].tokens[token] =
-                accounts[msg.sender].tokens[token] -
-                to_withdraw;
-
-            return cur_balance;
+            if (
+                to_withdraw <= accounts[msg.sender].tokens_map[token].interest
+            ) {
+                accounts[msg.sender].tokens_map[token].interest =
+                    accounts[msg.sender].tokens_map[token].interest -
+                    to_withdraw;
+            } else {
+                accounts[msg.sender].tokens_map[token].deposit =
+                    accounts[msg.sender].tokens_map[token].deposit -
+                    (to_withdraw -
+                        accounts[msg.sender].tokens_map[token].interest);
+                accounts[msg.sender].tokens_map[token].interest = 0;
+            }
+            emit Withdraw(msg.sender, token, to_withdraw);
+            return to_withdraw;
         }
     }
 
     function borrow(address token, uint256 amount)
         external
         override
+        OnlyIfValidToken(token)
         returns (uint256)
-    {}
+    {
+        if (token != magic_token) {
+            revert("");
+        }
+        if (accounts[msg.sender].token_address_list.length == 0) {
+            revert("no collateral deposited");
+        }
+    }
 
     function repay(address token, uint256 amount)
         external
         payable
         override
+        OnlyIfValidToken(token)
         returns (uint256)
     {}
 
