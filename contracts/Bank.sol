@@ -8,7 +8,7 @@ import "./libraries/Math.sol";
 import "hardhat/console.sol";
 
 contract Bank is IBank {
-    address private oracle;
+    IPriceOracle oracle;
     address private hakToken;
     address private magic_token = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
@@ -21,7 +21,7 @@ contract Bank is IBank {
     mapping(address => Balance) private accounts;
 
     constructor(address _priceOracle, address _hakToken) {
-        oracle = _priceOracle;
+        oracle = IPriceOracle(_priceOracle);
         hakToken = _hakToken;
     }
 
