@@ -35,7 +35,9 @@ contract Bank is IBank {
     }
 
     modifier OnlyIfValidToken(address token) {
-        require(token != address(0));
+        if (token != magic_token && isValidContract(token) == false) {
+            revert("token not supported");
+        }
         _;
     }
 
