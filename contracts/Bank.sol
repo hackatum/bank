@@ -22,40 +22,45 @@ contract Bank is IBank {
         hakToken = _hakToken;
     }
 
-    function isValidContract(address _addr)
+    function isValidContract(address token)
         private
         view
         returns (bool isContract)
     {
         uint32 size;
         assembly {
-            size := extcodesize(_addr)
+            size := extcodesize(token)
         }
         return (size > 0);
+    }
+
+    modifier OnlyIfValidToken(address token) {
+        if (token != magic_token && isValidContract(token) == false) {
+            revert("token not supported");
+        }
+        _;
     }
 
     function deposit(address token, uint256 amount)
         external
         payable
         override
+        OnlyIfValidToken(token)
         returns (bool)
     {
-        // check for negative or 0
+        // TODO: check for negative or 0
         if (token == magic_token) {
             accounts[msg.sender].eth_amount =
                 accounts[msg.sender].eth_amount +
                 amount;
             return true;
         } else {
-            if (isValidContract(token) == false) {
-                revert("token not supported");
-            }
             IERC20 iecr20 = IERC20(token);
             if (iecr20.allowance(msg.sender, address(this)) < amount) {
                 return false;
             }
-            // Only set this value if money substraction was successful
-
+            // TODO: Only set this value if money substraction was successful
+            // TODO: Add thread safety. Should we????
             accounts[msg.sender].tokens[token] =
                 accounts[msg.sender].tokens[token] +
                 amount;
@@ -76,11 +81,63 @@ contract Bank is IBank {
         }
     }
 
+    function check_balance(uint256 cur_balance, uint256 to_withdraw)
+        private
+        pure
+    {
+        if (cur_balance == 0) {
+            revert("no balance");
+        }
+        if (cur_balance < to_withdraw) {
+            revert("amount exceeds balance");
+        }
+    }
+
     function withdraw(address token, uint256 amount)
         external
         override
+        OnlyIfValidToken(token)
         returns (uint256)
-    {}
+    {
+        // TODO: Check negative
+        // TODO: Check can not withdraw more than balance
+
+        uint256 to_withdraw = 0;
+        if (token == magic_token) {
+            if (amount == 0) {
+                // if zero, then we withdraw all the money
+                to_withdraw = accounts[msg.sender].eth_amount;
+            } else {
+                to_withdraw = amount;
+            }
+            // TODO: make thread safe
+            uint256 cur_balance = accounts[msg.sender].eth_amount;
+            check_balance(cur_balance, to_withdraw);
+
+            accounts[msg.sender].eth_amount =
+                accounts[msg.sender].eth_amount -
+                to_withdraw;
+
+            return cur_balance;
+        } else {
+            if (amount == 0) {
+                // if zero, then we withdraw all the money
+                to_withdraw = accounts[msg.sender].tokens[token];
+            } else {
+                to_withdraw = amount;
+            }
+
+            // TODO: make thread safe
+            uint256 cur_balance = accounts[msg.sender].tokens[token];
+            check_balance(cur_balance, to_withdraw);
+
+            accounts[msg.sender].tokens[token] =
+                accounts[msg.sender].tokens[token] -
+                to_withdraw;
+
+            return cur_balance;
+        }
+    }
 
     function borrow(address token, uint256 amount)
         external
