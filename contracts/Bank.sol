@@ -6,7 +6,7 @@ import "./interfaces/IPriceOracle.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract Bank is IBank {
-    address private oracle;
+    IPriceOracle oracle;
     address private hakToken;
     address private magic_token = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
@@ -18,7 +18,7 @@ contract Bank is IBank {
     mapping(address => Balance) private accounts;
 
     constructor(address _priceOracle, address _hakToken) {
-        oracle = _priceOracle;
+        oracle = IPriceOracle(_priceOracle);
         hakToken = _hakToken;
     }
 
@@ -143,7 +143,9 @@ contract Bank is IBank {
         external
         override
         returns (uint256)
-    {}
+    {
+        emit Withdraw(msg.sender, token, amount);
+    }
 
     function repay(address token, uint256 amount)
         external
