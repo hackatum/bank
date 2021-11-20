@@ -2,8 +2,8 @@
 pragma solidity 0.7.0;
 
 import "./interfaces/IBank.sol";
-import "./interfaces/IERC20.sol";
 import "./interfaces/IPriceOracle.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract Bank is IBank {
     address private oracle;
@@ -35,9 +35,7 @@ contract Bank is IBank {
     }
 
     modifier OnlyIfValidToken(address token) {
-        if (token != magic_token && isValidContract(token) == false) {
-            revert("token not supported");
-        }
+        require(token != address(0));
         _;
     }
 
