@@ -14,7 +14,10 @@ contract Bank is IBank {
 
     struct Balance {
         address[] token_address_list;
+        Account[] borrow_list;
         mapping(address => Account) tokens_map;
+        // mapping(address => Account) borrows_map;
+        uint256 collateral;
         Account eth_act;
     }
 
@@ -25,12 +28,33 @@ contract Bank is IBank {
         hakToken = _hakToken;
     }
 
+    function updateBorrowInterest() private returns (uint256) {
+        Balance storage user_bal = accounts[msg.sender];
+        uint256 total = 0;
+        uint256 arrayLength = user_bal.borrow_list.length;
+        for (uint256 i = 0; i < arrayLength; i++) {
+            Account memory updated_token_acc = calculateInterest(
+                user_bal.borrow_list[i],
+                block.number,
+                5
+            );
+            user_bal.borrow_list[i] = updated_token_acc;
+            total =
+                total +
+                updated_token_acc.deposit +
+                updated_token_acc.interest;
+        }
+
+        return total;
+    }
+
     modifier updateInterest(address token) {
         Balance storage user_bal = accounts[msg.sender];
 
         Account memory updated_eth_acc = calculateInterest(
             user_bal.eth_act,
-            block.number
+            block.number,
+            3
         );
         accounts[msg.sender].eth_act = updated_eth_acc;
 
@@ -38,7 +62,8 @@ contract Bank is IBank {
         for (uint256 i = 0; i < arrayLength; i++) {
             Account memory updated_token_acc = calculateInterest(
                 user_bal.tokens_map[user_bal.token_address_list[i]],
-                block.number
+                block.number,
+                3
             );
             user_bal.tokens_map[
                 user_bal.token_address_list[i]
@@ -49,14 +74,14 @@ contract Bank is IBank {
     }
 
     // TODO: maybe we can use calldata instead of memory
-    function calculateInterest(Account memory account, uint256 current_block)
-        private
-        view
-        returns (Account memory)
-    {
+    function calculateInterest(
+        Account memory account,
+        uint256 current_block,
+        uint256 interest
+    ) private view returns (Account memory) {
         uint256 passed_block = current_block - account.lastInterestBlock;
         if (passed_block < 0) revert("Can not go back to past");
-        uint256 tem = DSMath.mul(3, passed_block);
+        uint256 tem = DSMath.mul(interest, passed_block);
         // uint256 amt_interest = ((3 * passed_block) / 10000); // TODO: Recheck // .03
 
         uint256 added_interest = DSMath.mul(account.deposit, tem) / 10000;
@@ -136,13 +161,15 @@ contract Bank is IBank {
         if (token == magic_token) {
             Account memory updated = calculateInterest(
                 accounts[msg.sender].eth_act,
-                block.number
+                block.number,
+                3
             );
             return updated.deposit + updated.interest;
         } else {
             Account memory updated = calculateInterest(
                 accounts[msg.sender].tokens_map[token],
-                block.number
+                block.number,
+                3
             );
             return updated.deposit + updated.interest;
         }
@@ -236,6 +263,7 @@ contract Bank is IBank {
         external
         override
         OnlyIfValidToken(token)
+        updateInterest(token)
         returns (uint256)
     {
         if (token != magic_token) {
@@ -244,6 +272,25 @@ contract Bank is IBank {
         if (accounts[msg.sender].token_address_list.length == 0) {
             revert("no collateral deposited");
         }
+
+        uint256 cur_balance = 0;
+        Balance storage user_bal = accounts[msg.sender];
+        uint256 arrayLength = user_bal.token_address_list.length;
+
+        for (uint256 i = 0; i < arrayLength; i++) {
+            cur_balance =
+                cur_balance +
+                user_bal.tokens_map[user_bal.token_address_list[i]].deposit +
+                user_bal.tokens_map[user_bal.token_address_list[i]].interest;
+        }
+
+        Account memory borrow_item = Account(amount, 0, block.number);
+        user_bal.borrow_list.push(borrow_item);
+        user_bal.collateral = (cur_balance * 10000) / updateBorrowInterest();
+
+        emit Borrow(msg.sender, token, amount, user_bal.collateral);
+
+        return user_bal.collateral;
     }
 
     function repay(address token, uint256 amount)
@@ -266,5 +313,7 @@ contract Bank is IBank {
         view
         override
         returns (uint256)
-    {}
+    {
+        return accounts[msg.sender].collateral;
+    }
 }
